@@ -406,6 +406,8 @@ describe('private bootstrap and relay selection', () => {
     let bundleScopeIncarnation = '5'.repeat(32);
     let bundleRevision = '1';
     let bundleContextEpoch = '1';
+    let bundleInvocation: Record<string, unknown> = { state: 'U', rules: [] };
+    let bundleCapability: Record<string, unknown> = { state: 'U', rules: [] };
     const selfBundleReads: Array<{ spaceId: string | null; cacheControl: string | undefined }> = [];
     const coordStatePath = join(root, 'coord-mode.json');
     writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'allow', contextEpoch: '1', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
@@ -616,8 +618,8 @@ describe('private bootstrap and relay selection', () => {
           context_epoch: bundleContextEpoch,
           catalog_version: 'synthetic-identity-only',
           catalog_digest: String(boot.hostConfig.release_sha256),
-          invocation: { state: 'unconfigured', rules: [] },
-          capability: { state: 'unconfigured', rules: [] },
+          invocation: bundleInvocation,
+          capability: bundleCapability,
         };
         const computedDigest = createHash('sha256').update(canonicalControl(unsignedBundle), 'utf8').digest('hex');
         const sealedBundle = {
@@ -1003,6 +1005,13 @@ let mcpStatus = 'NO_MCP';
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
       selfBundleCorruptDigest = false;
 
+      // (d) Unknown/legacy stage state names ('unconfigured'/'configured') or U with rules are rejected before provisioning
+      bundleInvocation = { state: 'unconfigured', rules: [] };
+      await expect(managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' }))
+        .rejects.toThrow('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid invocation stage');
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
+      bundleInvocation = { state: 'U', rules: [] };
+
       const realNative = createNativeEndpointDriver({ config, botId: 'bot', key: descriptor.key });
       // Rejects message_seq <= 0 before any HTTP request
       await expect(realNative.inspect({
@@ -1016,7 +1025,7 @@ let mcpStatus = 'NO_MCP';
       // authenticates against GET /v1/bot/permission-bundle/v1?space_id=space, binds durable
       // ReplayJournal lineage, runs recoverInterrupted(), and starts the private coordinator.
       endpoint = await managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' });
-      expect(selfBundleReads).toHaveLength(4);
+      expect(selfBundleReads).toHaveLength(5);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_lineage'").get())
         .toEqual({ name: 'permission_replay_lineage' });
 
@@ -1233,6 +1242,258 @@ let mcpStatus = 'NO_MCP';
       await new Promise<void>(resolve => relayHttpsServer.close(() => resolve()));
       nativeServer.closeAllConnections();
       await new Promise<void>(resolve => nativeServer.close(() => resolve()));
+    }
+  });
+
+  it('verifies authenticated Server 53b0dcc6 wire U/E stages and snapshot semantics across both planes and fails closed on malformed or inconsistent bundles', async () => {
+    const key = {
+      origin: 'https://xin2858.invalid',
+      bot_uid: 'xin2858_fixture_bot',
+      space_id: '242ed1dc096d4dd28ffa42425a7efeea',
+    };
+    const expectedCatalog = {
+      catalog_format: 'permission-catalog-package-v2' as const,
+      catalog_version: 'octo-capabilities-v1-xin2748-v4',
+      catalog_digest: 'ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc',
+    };
+    const config: Config = {
+      baseDir: root, dataDir: root, cwd: root, cwdBase: root, botId: key.bot_uid,
+      apiUrl: key.origin, botToken: 'bf_xin2858_native_token',
+      rateLimit: { maxPerMinute: 100 }, context: { maxContextChars: 6000, historyLimit: 40 },
+      maxResponseChars: 5000, dispatchTimeoutMs: 10000,
+      cards: { disable: false, eventTransport: 'off', reasoningSummary: 'off' },
+      sdk: {},
+    };
+
+    const sealBundle = (invocation: unknown, capability: unknown, overrides?: Record<string, unknown>): string => {
+      const unsigned: Record<string, unknown> = {
+        schema_version: 1,
+        key,
+        scope_incarnation: 'ce3a7033d956f318b4c417736b17e60a',
+        revision: '0',
+        context_epoch: '0',
+        catalog_version: expectedCatalog.catalog_version,
+        catalog_digest: expectedCatalog.catalog_digest,
+        invocation,
+        capability,
+        ...overrides,
+      };
+      const digest = createHash('sha256').update(canonicalControl(unsigned), 'utf8').digest('hex');
+      return canonicalControl({ ...unsigned, bundle_digest: digest });
+    };
+
+    let currentPayload = '';
+    const fetchStub: typeof fetch = async (input, init) => {
+      expect(String(input)).toBe(`${key.origin}/v1/bot/permission-bundle/v1?space_id=${key.space_id}`);
+      const headers = new Headers(init?.headers);
+      expect(headers.get('authorization')).toBe(`Bearer ${config.botToken}`);
+      expect(headers.get('x-space-id')).toBe(key.space_id);
+      expect(headers.get('cache-control')).toBe('no-store');
+      return new Response(currentPayload, {
+        status: 200,
+        headers: {
+          'Content-Type': 'application/json; charset=utf-8',
+          'Cache-Control': 'private, no-store',
+          Pragma: 'no-cache',
+        },
+      });
+    };
+
+    const driver = createNativeEndpointDriver({
+      config,
+      key,
+      botId: key.bot_uid,
+      expectedCatalog,
+      fetchImpl: fetchStub,
+    });
+
+    const validInvocationRule1 = {
+      rule_id: 'inv_allow_humans',
+      effect: 'allow',
+      caller: { kind: 'all_humans' },
+      source: { kind: 'all_in_space', conversation_types: ['dm', 'group', 'thread'] },
+    };
+    const validInvocationRule2 = {
+      rule_id: 'inv_deny_refs',
+      effect: 'deny',
+      caller: { kind: 'uids', uids: ['alice', 'bob'] },
+      source: {
+        kind: 'refs',
+        refs: [
+          { kind: 'dm', id: 'alice@xin2858_fixture_bot' },
+          { kind: 'group', id: 'grp_main', include_descendants: false },
+          { kind: 'thread', id: 'grp_main:thr_1' },
+        ],
+      },
+    };
+    const validCapabilityRule = {
+      rule_id: 'cap_allow_ops',
+      effect: 'allow',
+      caller: { kind: 'all_humans' },
+      source: { kind: 'all_in_space', conversation_types: ['dm', 'group'] },
+      capabilities: [
+        'octo-cli/docs/op/docs.search',
+        'octo-cli/message/op/message.send',
+      ],
+    };
+
+    try {
+      // 1. Exact authenticated Server 53b0dcc6 U/U bundle (matching /private/tmp/xin2858-repaired/runtime/native-self.json)
+      currentPayload = '{"bundle_digest":"0a24137b64ba2aa438eb9dcdc424b6b455cad0663cf76693dd99799c75f6de4a","capability":{"rules":[],"state":"U"},"catalog_digest":"ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc","catalog_version":"octo-capabilities-v1-xin2748-v4","context_epoch":"0","invocation":{"rules":[],"state":"U"},"key":{"bot_uid":"xin2858_fixture_bot","origin":"https://xin2858.invalid","space_id":"242ed1dc096d4dd28ffa42425a7efeea"},"revision":"0","schema_version":1,"scope_incarnation":"ce3a7033d956f318b4c417736b17e60a"}';
+      await driver.recover(key);
+      expect(driver.recoveredLineage?.()).toEqual({
+        origin: key.origin,
+        botUid: key.bot_uid,
+        spaceId: key.space_id,
+        scopeIncarnation: 'ce3a7033d956f318b4c417736b17e60a',
+      });
+      expect(driver.recoveredStages?.()).toEqual({
+        invocation: { wireState: 'U', state: 'unconfigured', ruleCount: 0 },
+        capability: { wireState: 'U', state: 'unconfigured', ruleCount: 0 },
+      });
+
+      // 2. Independent E / U with 0 rules (enforced deny-all after reset / delete_rules / activate([]))
+      currentPayload = sealBundle({ state: 'E', rules: [] }, { state: 'U', rules: [] }, { revision: '1', context_epoch: '1' });
+      await driver.recover(key);
+      expect(driver.recoveredStages?.()).toEqual({
+        invocation: { wireState: 'E', state: 'configured', ruleCount: 0 },
+        capability: { wireState: 'U', state: 'unconfigured', ruleCount: 0 },
+      });
+
+      // 3. Independent E / U with non-empty invocation rules
+      currentPayload = sealBundle(
+        { state: 'E', rules: [validInvocationRule1, validInvocationRule2] },
+        { state: 'U', rules: [] },
+        { revision: '2', context_epoch: '1' },
+      );
+      await driver.recover(key);
+      expect(driver.recoveredStages?.()).toEqual({
+        invocation: { wireState: 'E', state: 'configured', ruleCount: 2 },
+        capability: { wireState: 'U', state: 'unconfigured', ruleCount: 0 },
+      });
+
+      // 4. Independent U / E with capability rules
+      currentPayload = sealBundle(
+        { state: 'U', rules: [] },
+        { state: 'E', rules: [validCapabilityRule] },
+        { revision: '3', context_epoch: '1' },
+      );
+      await driver.recover(key);
+      expect(driver.recoveredStages?.()).toEqual({
+        invocation: { wireState: 'U', state: 'unconfigured', ruleCount: 0 },
+        capability: { wireState: 'E', state: 'configured', ruleCount: 1 },
+      });
+
+      // 5. Independent E / E with rules in both planes
+      currentPayload = sealBundle(
+        { state: 'E', rules: [validInvocationRule1] },
+        { state: 'E', rules: [validCapabilityRule] },
+        { revision: '4', context_epoch: '2' },
+      );
+      await driver.recover(key);
+      expect(driver.recoveredStages?.()).toEqual({
+        invocation: { wireState: 'E', state: 'configured', ruleCount: 1 },
+        capability: { wireState: 'E', state: 'configured', ruleCount: 1 },
+      });
+
+      // 6. Negative inputs: unknown/malformed/inconsistent stage and rule data must fail closed
+      const negativeCases: Array<{ name: string; invocation: unknown; capability: unknown; expectedError: string }> = [
+        {
+          name: 'wire state "unconfigured" on invocation',
+          invocation: { state: 'unconfigured', rules: [] },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'wire state "configured" on capability',
+          invocation: { state: 'U', rules: [] },
+          capability: { state: 'configured', rules: [validCapabilityRule] },
+          expectedError: 'invalid capability stage',
+        },
+        {
+          name: 'U stage carrying non-empty rules on invocation',
+          invocation: { state: 'U', rules: [validInvocationRule1] },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'U stage carrying non-empty rules on capability',
+          invocation: { state: 'U', rules: [] },
+          capability: { state: 'U', rules: [validCapabilityRule] },
+          expectedError: 'invalid capability stage',
+        },
+        {
+          name: 'invocation rule carrying capabilities field',
+          invocation: { state: 'E', rules: [{ ...validInvocationRule1, capabilities: ['octo-cli/message/op/message.send'] }] },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'capability rule missing capabilities field',
+          invocation: { state: 'U', rules: [] },
+          capability: { state: 'E', rules: [validInvocationRule1] },
+          expectedError: 'invalid capability stage',
+        },
+        {
+          name: 'capability rule with empty capabilities array',
+          invocation: { state: 'U', rules: [] },
+          capability: { state: 'E', rules: [{ ...validCapabilityRule, capabilities: [] }] },
+          expectedError: 'invalid capability stage',
+        },
+        {
+          name: 'unsorted or duplicate rule_ids in invocation stage',
+          invocation: { state: 'E', rules: [validInvocationRule2, validInvocationRule1] },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'unsorted caller uids',
+          invocation: {
+            state: 'E',
+            rules: [{
+              ...validInvocationRule1,
+              caller: { kind: 'uids', uids: ['zoe', 'alice'] },
+            }],
+          },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'group ref missing boolean include_descendants',
+          invocation: {
+            state: 'E',
+            rules: [{
+              ...validInvocationRule1,
+              source: { kind: 'refs', refs: [{ kind: 'group', id: 'grp_main' }] },
+            }],
+          },
+          capability: { state: 'U', rules: [] },
+          expectedError: 'invalid invocation stage',
+        },
+        {
+          name: 'unsorted capability IDs in capability rule',
+          invocation: { state: 'U', rules: [] },
+          capability: {
+            state: 'E',
+            rules: [{
+              ...validCapabilityRule,
+              capabilities: [
+                'octo-cli/message/op/message.send',
+                'octo-cli/docs/op/docs.search',
+              ],
+            }],
+          },
+          expectedError: 'invalid capability stage',
+        },
+      ];
+
+      for (const tc of negativeCases) {
+        currentPayload = sealBundle(tc.invocation, tc.capability);
+        await expect(driver.recover(key), tc.name)
+          .rejects.toThrow(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: ${tc.expectedError}`);
+      }
+    } finally {
+      await driver.stop();
     }
   });
 });

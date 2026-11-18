@@ -10,7 +10,7 @@ const rawSource = process.argv[2];
 if (!rawSource || !isAbsolute(rawSource)) throw new Error('Explicit task-local CLI source archive required');
 const source = realpathSync(rawSource);
 if (existsSync(join(source, '.git'))) throw new Error('Explicit task-local CLI source archive required');
-const revision = process.argv[3] ?? '6b116ee532ab664e6b9380c5829f03dd7619f965';
+const revision = process.argv[3] ?? '424942e82934a105ed011830d5a482cb0682bd49';
 const versions = {
   '14f9b53d3932c532d6424e8783bd94528e5f7fc6': {
     'internal/mcp/permission_relay.go': '864a57424f7076b157bbd596f88cce8f5d98245afdb546ea72ed706165d6519e',
@@ -83,6 +83,23 @@ const versions = {
     'docs/permission/cli-component-contract-v6.json': '49dc2d92928cf673998c433931610ff685523929cd90b97864693fc4cbef5fc4',
     'docs/permission/contract-manifest-v6.json': 'a3ac8716286ecd91514c74abb780fd8b4210ff3a1da248c02dc4f7b4cacb438d',
     'docs/permission/response-budget-ledger-v6.json': '7c46334eacc9796c003c6929373033359e0428ed57d74a07244db84a7837e463',
+    'docs/permission/catalog-package-v2/manifest.json': 'ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc',
+    'docs/permission/source-slot-witness-v5.json.gz': '0c5da173bd0f53c64562a70a5c5feebc955ad111bbe84ed11f5588c08b4b9c0b',
+  },
+  '424942e82934a105ed011830d5a482cb0682bd49': {
+    'internal/mcp/permission_relay.go': '825c2160c90486a7be3da3ff85890e7ab8785097b93812bff9310eb6b5955174',
+    'internal/mcp/permission_host.go': '15908cc939730ff2d4723b7ab921d27e8a8648b10242c50d5a1fe689cd84d91e',
+    'internal/mcp/permission_bootstrap.go': '2b8300d54d4c28e1404b47a597a915b6dbfce4acc483b78253d52097fcd3aa56',
+    'internal/mcp/managed.go': '66d4a9a574865d198021194801130caf9e58aa3722c529b0539d06c9d28efca4',
+    'internal/permission/coordinator.go': '8429a9b6a104b2a2d3c8ce5e85e5533295fea33d21a13eef20e404260eb0190b',
+    'internal/permission/runtime.go': 'fd32da12d9a6d0394b8e93c8c2f610bdf636b61498d6d084e4e61e7aeac12097',
+    'docs/permission/endpoint-abi-v2.json': '49b2ed31a4c78a7a7cee3957ea60aa7c6370ac8103d2896d297025c24b17fcb2',
+    'docs/permission/cli-component-contract-v6.json': '49dc2d92928cf673998c433931610ff685523929cd90b97864693fc4cbef5fc4',
+    'docs/permission/cli-component-contract-v7.json': 'd697552aa34c89d32fec13f8ec00a3948e0f5498e6fd2c371c054225afe30f97',
+    'docs/permission/contract-manifest-v6.json': 'a3ac8716286ecd91514c74abb780fd8b4210ff3a1da248c02dc4f7b4cacb438d',
+    'docs/permission/contract-manifest-v7.json': '5264830ae91aa10ca1d337b35884da850abc69595dc8dbac9900257f081b49ef',
+    'docs/permission/response-budget-ledger-v6.json': '7c46334eacc9796c003c6929373033359e0428ed57d74a07244db84a7837e463',
+    'docs/permission/isolated-test-catalog-fixture-v1.json': 'c1b4cacb40a58394fdb9c172c48f06a6f98c555fb29ad2d3f0c1b6ef113c90cc',
     'docs/permission/catalog-package-v2/manifest.json': 'ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc',
     'docs/permission/source-slot-witness-v5.json.gz': '0c5da173bd0f53c64562a70a5c5feebc955ad111bbe84ed11f5588c08b4b9c0b',
   },

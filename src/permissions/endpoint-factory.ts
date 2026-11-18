@@ -18,6 +18,16 @@ import { catalogBootPin, verifyCatalogBoot, type CatalogBootPin } from './catalo
 import type { OriginalIdentity } from './context-provenance.js';
 import type { ReceivedDelivery } from './ingress-reservation.js';
 
+export interface NormalizedBundleStage {
+  readonly wireState: 'U' | 'E';
+  readonly state: 'unconfigured' | 'configured';
+  readonly ruleCount: number;
+}
+export interface RecoveredBundleStages {
+  readonly invocation: Readonly<NormalizedBundleStage>;
+  readonly capability: Readonly<NormalizedBundleStage>;
+}
+
 /** Compiled trusted adapters, never imported from an operator/module path, MCP,
  * model output or a JSON claim. */
 export interface NativeEndpointDriver extends Pick<EndpointHostPorts,
@@ -27,6 +37,8 @@ export interface NativeEndpointDriver extends Pick<EndpointHostPorts,
   recover(key: Readonly<PermissionKey>): Promise<void>;
   /** Verified native scope lineage established by recover(), used to bind the local replay journal. */
   recoveredLineage?(): Readonly<ReplayLineage> | undefined;
+  /** Normalized Agent-boundary stage state established by recover() from wire U/E planes. */
+  recoveredStages?(): Readonly<RecoveredBundleStages> | undefined;
 }
 export interface ContainedWorkerDriver {
   /** Own the actual isolated launch AND input/model/publication boundary;
@@ -280,6 +292,206 @@ interface BoundDeliveryRecord {
   readonly resolvablePurposes: readonly string[];
 }
 
+function validBundleText(value: unknown, maxScalars: number, maxBytes: number): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+    return false;
+  }
+  if (Buffer.byteLength(value, 'utf8') > maxBytes || Array.from(value).length > maxScalars) {
+    return false;
+  }
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validNativeId(value: unknown): value is string {
+  return validBundleText(value, 40, 160);
+}
+
+function validAsciiToken(value: unknown, maxBytes: number, ruleIdOnly: boolean): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > maxBytes) {
+    return false;
+  }
+  return ruleIdOnly ? /^[A-Za-z0-9._-]+$/.test(value) : /^[\x21-\x7e]+$/.test(value);
+}
+
+function verifyBundleCaller(rawCaller: unknown, stageKey: 'invocation' | 'capability'): number {
+  let caller: Record<string, unknown>;
+  try {
+    caller = object(rawCaller);
+  } catch {
+    throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+  }
+  if (caller.kind === 'all_humans') {
+    try {
+      object(rawCaller, ['kind']);
+    } catch {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    return 0;
+  }
+  if (caller.kind === 'uids') {
+    try {
+      object(rawCaller, ['kind', 'uids']);
+    } catch {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    if (!Array.isArray(caller.uids) || caller.uids.length < 1 || caller.uids.length > 64) {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    let prevUid: string | undefined;
+    for (const uid of caller.uids) {
+      if (!validNativeId(uid) || (prevUid !== undefined && !(prevUid < uid))) {
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+      }
+      prevUid = uid;
+    }
+    return caller.uids.length;
+  }
+  throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+}
+
+function verifyBundleSource(rawSource: unknown, stageKey: 'invocation' | 'capability'): number {
+  let source: Record<string, unknown>;
+  try {
+    source = object(rawSource);
+  } catch {
+    throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+  }
+  if (source.kind === 'all_in_space') {
+    try {
+      object(rawSource, ['kind', 'conversation_types']);
+    } catch {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    if (!Array.isArray(source.conversation_types)
+      || source.conversation_types.length < 1
+      || source.conversation_types.length > 3) {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    let prevType: string | undefined;
+    for (const convType of source.conversation_types) {
+      if ((convType !== 'dm' && convType !== 'group' && convType !== 'thread')
+        || (prevType !== undefined && !(prevType < convType))) {
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+      }
+      prevType = convType;
+    }
+    return source.conversation_types.length;
+  }
+  if (source.kind === 'refs') {
+    try {
+      object(rawSource, ['kind', 'refs']);
+    } catch {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    if (!Array.isArray(source.refs) || source.refs.length < 1 || source.refs.length > 64) {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    let prevRefBytes: Buffer | undefined;
+    for (const rawRef of source.refs) {
+      let ref: Record<string, unknown>;
+      try {
+        ref = object(rawRef);
+        if (ref.kind === 'dm') {
+          object(rawRef, ['kind', 'id']);
+          if (!validBundleText(ref.id, 100, 400)) throw new Error('invalid dm ref');
+        } else if (ref.kind === 'group') {
+          object(rawRef, ['kind', 'id', 'include_descendants']);
+          if (!validNativeId(ref.id) || typeof ref.include_descendants !== 'boolean') {
+            throw new Error('invalid group ref');
+          }
+        } else if (ref.kind === 'thread') {
+          object(rawRef, ['kind', 'id']);
+          if (!validBundleText(ref.id, 256, 256)) throw new Error('invalid thread ref');
+        } else {
+          throw new Error('invalid ref kind');
+        }
+      } catch {
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+      }
+      const canonicalRefBytes = Buffer.from(canonicalControl(ref), 'utf8');
+      if (prevRefBytes !== undefined && Buffer.compare(prevRefBytes, canonicalRefBytes) >= 0) {
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+      }
+      prevRefBytes = canonicalRefBytes;
+    }
+    return source.refs.length;
+  }
+  throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+}
+
+function verifyBundleStage(
+  rawStage: unknown,
+  stageKey: 'invocation' | 'capability',
+): {
+  readonly normalized: Readonly<NormalizedBundleStage>;
+  readonly selectors: number;
+  readonly capabilities: number;
+} {
+  let stage: Record<string, unknown>;
+  try {
+    stage = object(rawStage, ['state', 'rules']);
+  } catch {
+    throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+  }
+  if ((stage.state !== 'U' && stage.state !== 'E')
+    || !Array.isArray(stage.rules)
+    || stage.rules.length > 128
+    || (stage.state === 'U' && stage.rules.length !== 0)) {
+    throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+  }
+  const capabilityPlane = stageKey === 'capability';
+  const expectedRuleKeys = capabilityPlane
+    ? ['rule_id', 'effect', 'caller', 'source', 'capabilities']
+    : ['rule_id', 'effect', 'caller', 'source'];
+  let prevRuleId: string | undefined;
+  let selectors = 0;
+  let capabilities = 0;
+  for (const rawRule of stage.rules) {
+    let rule: Record<string, unknown>;
+    try {
+      rule = object(rawRule, expectedRuleKeys);
+    } catch {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    if (!validAsciiToken(rule.rule_id, 64, true)
+      || (rule.effect !== 'allow' && rule.effect !== 'deny')
+      || (prevRuleId !== undefined && !(prevRuleId < rule.rule_id))) {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+    prevRuleId = rule.rule_id;
+    selectors += verifyBundleCaller(rule.caller, stageKey);
+    selectors += verifyBundleSource(rule.source, stageKey);
+    if (capabilityPlane) {
+      if (!Array.isArray(rule.capabilities) || rule.capabilities.length < 1 || rule.capabilities.length > 64) {
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+      }
+      let prevCap: string | undefined;
+      for (const cap of rule.capabilities) {
+        if (!validAsciiToken(cap, 256, false) || (prevCap !== undefined && !(prevCap < cap))) {
+          throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+        }
+        prevCap = cap;
+      }
+      capabilities += rule.capabilities.length;
+    }
+  }
+  return {
+    normalized: Object.freeze({
+      wireState: stage.state,
+      state: stage.state === 'U' ? 'unconfigured' : 'configured',
+      ruleCount: stage.rules.length,
+    }),
+    selectors,
+    capabilities,
+  };
+}
+
 function verifyNativeSelfBundle(
   parsed: unknown,
   rawText: string,
@@ -292,6 +504,7 @@ function verifyNativeSelfBundle(
   readonly catalogVersion: string;
   readonly catalogDigest: string;
   readonly bundleDigest: string;
+  readonly stages: Readonly<RecoveredBundleStages>;
 } {
   let obj: Record<string, unknown>;
   try {
@@ -321,7 +534,15 @@ function verifyNativeSelfBundle(
     || typeof obj.bundle_digest !== 'string' || !/^[0-9a-f]{64}$/.test(obj.bundle_digest)) {
     throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid self bundle fields');
   }
-  const keyObj = object(obj.key, ['origin', 'bot_uid', 'space_id']);
+  let keyObj: Record<string, unknown>;
+  try {
+    keyObj = object(obj.key, ['origin', 'bot_uid', 'space_id']);
+  } catch {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: malformed self bundle');
+  }
+  if (!validNativeId(keyObj.bot_uid) || !validNativeId(keyObj.space_id)) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid self bundle fields');
+  }
   if (keyObj.origin !== expectedKey.origin
     || keyObj.bot_uid !== expectedKey.bot_uid
     || keyObj.space_id !== expectedKey.space_id) {
@@ -332,14 +553,11 @@ function verifyNativeSelfBundle(
       || obj.catalog_digest !== expectedCatalog.catalog_digest)) {
     throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: self bundle catalog pin mismatch');
   }
-  for (const stageKey of ['invocation', 'capability'] as const) {
-    const stage = object(obj[stageKey], ['state', 'rules']);
-    if ((stage.state !== 'unconfigured' && stage.state !== 'configured')
-      || !Array.isArray(stage.rules)
-      || stage.rules.length > 128
-      || (stage.state === 'unconfigured') !== (stage.rules.length === 0)) {
-      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
-    }
+  const invocationStage = verifyBundleStage(obj.invocation, 'invocation');
+  const capabilityStage = verifyBundleStage(obj.capability, 'capability');
+  if (invocationStage.selectors + capabilityStage.selectors > 4096
+    || capabilityStage.capabilities > 1024) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: self bundle selector or capability limit exceeded');
   }
   let canonicalFull: string;
   let canonicalWithoutDigest: string;
@@ -365,6 +583,10 @@ function verifyNativeSelfBundle(
     catalogVersion: obj.catalog_version,
     catalogDigest: obj.catalog_digest,
     bundleDigest: obj.bundle_digest,
+    stages: Object.freeze({
+      invocation: invocationStage.normalized,
+      capability: capabilityStage.normalized,
+    }),
   };
 }
 
@@ -376,6 +598,7 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
   const botToken = options.config.botToken;
   const boundDeliveryByHeaderRef = new Map<string, BoundDeliveryRecord>();
   let recoveredLineage: Readonly<ReplayLineage> | undefined;
+  let recoveredStages: Readonly<RecoveredBundleStages> | undefined;
 
   async function callNativeEndpoint(
     routePath: string,
@@ -417,6 +640,10 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
   return {
     recoveredLineage(): Readonly<ReplayLineage> | undefined {
       return recoveredLineage;
+    },
+
+    recoveredStages(): Readonly<RecoveredBundleStages> | undefined {
+      return recoveredStages;
     },
 
     async recover(key: Readonly<PermissionKey>): Promise<void> {
@@ -480,6 +707,7 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
         spaceId: expectedKey.space_id,
         scopeIncarnation: verified.scopeIncarnation,
       });
+      recoveredStages = verified.stages;
     },
 
     async inspect(delivery: ReceivedDelivery): Promise<NativeIngress> {

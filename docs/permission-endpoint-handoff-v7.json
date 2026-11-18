@@ -4,7 +4,7 @@
   "status": "BLOCKED_SERVER_ORIGINAL_VISIBILITY_ORDINARY_SQL_RESTORE_SERVED_CATALOGS_AND_OWNER_DECISIONS",
   "base_sha": "5dfde6cfd56621b0fbcf9ec7f310c7caa5135f34",
   "live_upstream_main": "2f4d0521bcae9e15c008c29e290427de5813e8d2",
-  "previous_endpoint_head": "ecbfb5bea8955dd6277ab6767ae3964faad54bc4",
+  "previous_endpoint_head": "b0dfa1057b806ed49ac5096cd5dfade3af65a5cf",
   "supported_catalog_digest": null,
   "task_registry": {
     "charter_xin_2323": "17e81670-5b49-461d-9509-7c22ca127939",
@@ -13,15 +13,15 @@
     "endpoint_xin_2795": "2f4a34e9-2be3-48ac-99f0-38a30f077acd",
     "analysis_xin_2830": "2fd1cf39-ab4d-4da5-aaa0-75161eb9ae52",
     "review_xin_2834": "46d23689-0cb4-4d33-b488-8d430ae854c3",
-    "preflight_xin_2858": "b7a0d0d2-322c-41a0-a042-7c92a76f57d3"
+    "deploy_xin_2858": "82b24670-093d-4433-b5bb-10866bc761d8"
   },
   "approved_amendment": {
-    "baseline": "XIN-2323/ACTIVE-XIN-2858-native-startup-repair",
-    "charter_comment": "65ac8fad-1356-4f0b-a2d2-fe55bab0111e",
-    "review_verdict": "7827f70f-94e7-4efc-b5b7-da7b7496f2db",
-    "authority_comment": "776c4f93-6325-4cc5-9871-9d436cae7d67",
-    "trigger_comment": "776c4f93-6325-4cc5-9871-9d436cae7d67",
-    "xin_2858_preflight": "b7a0d0d2-322c-41a0-a042-7c92a76f57d3",
+    "baseline": "XIN-2323/ACTIVE-XIN-2858-agent-native-UE-recovery-compatibility",
+    "charter_comment": "a6e4d87e-ae08-43e5-a97b-53ddfa0513ea",
+    "review_verdict": "26710b0b-d90f-4809-a06e-8cc4a14557d7",
+    "authority_comment": "c672a597-0985-4ed8-97c3-259ec55a0907",
+    "trigger_comment": "c672a597-0985-4ed8-97c3-259ec55a0907",
+    "xin_2858_outcome": "2079f6eb-02f8-4f14-911e-07141ea0cecf",
     "xin_2830_memo": "4831fa26-b5de-4dc0-a3dc-79477c891f91",
     "xin_2830_report": {
       "comment_id": "edd9ad84-f10b-4e1e-9161-19a598bbb153",
@@ -45,8 +45,8 @@
     }
   },
   "consumed": {
-    "cli_head": "6b116ee532ab664e6b9380c5829f03dd7619f965",
-    "cli_synchronization_status": "Tested against live octo-cli PR #234 head 6b116ee532ab664e6b9380c5829f03dd7619f965 (Round 2 C-B1r2/C-B3 delivered) and octo-server PR #951 head f3cf3a13a29c3f85be14e4b794d1a0836b54a9dc",
+    "cli_head": "424942e82934a105ed011830d5a482cb0682bd49",
+    "cli_synchronization_status": "Tested against pinned octo-cli head 424942e82934a105ed011830d5a482cb0682bd49 (cli-component-contract-v7.json, contract-manifest-v7.json, isolated-test-catalog-fixture-v1.json) and pinned octo-server head 53b0dcc6d176a56746d9da3ab64a65c21c434348 (handoff-v10.json, contract-manifest-v10.json)",
     "cli_endpoint_abi_v1": {
       "path": "docs/permission/endpoint-abi-v1.json",
       "bytes": 3923,
@@ -57,15 +57,20 @@
       "bytes": 11539,
       "sha256": "49b2ed31a4c78a7a7cee3957ea60aa7c6370ac8103d2896d297025c24b17fcb2"
     },
-    "cli_manifest_v6": {
-      "path": "docs/permission/contract-manifest-v6.json",
-      "bytes": 2879,
-      "sha256": "a3ac8716286ecd91514c74abb780fd8b4210ff3a1da248c02dc4f7b4cacb438d"
+    "cli_manifest_v7": {
+      "path": "docs/permission/contract-manifest-v7.json",
+      "bytes": 3737,
+      "sha256": "5264830ae91aa10ca1d337b35884da850abc69595dc8dbac9900257f081b49ef"
+    },
+    "cli_component_contract_v7": {
+      "path": "docs/permission/cli-component-contract-v7.json",
+      "bytes": 4755,
+      "sha256": "d697552aa34c89d32fec13f8ec00a3948e0f5498e6fd2c371c054225afe30f97"
     },
     "cli_permission_host": {
       "path": "internal/mcp/permission_host.go",
-      "bytes": 39898,
-      "sha256": "a19f29020a9e0ab0a128380ee10cb2a41665ab305ca45ebddde48c7a2260d7ee"
+      "bytes": 40356,
+      "sha256": "15908cc939730ff2d4723b7ab921d27e8a8648b10242c50d5a1fe689cd84d91e"
     },
     "cli_permission_relay": {
       "path": "internal/mcp/permission_relay.go",
@@ -89,21 +94,21 @@
       "decoded_bytes": 843132,
       "decoded_sha256": "0dac894681aa7f4f8810f5fa5574d68ce071f2a401df4a99da4a92e7a43e7c5b"
     },
-    "server_head": "f3cf3a13a29c3f85be14e4b794d1a0836b54a9dc",
-    "server_manifest_v9": {
-      "path": "pkg/permissionbundle/contracts/contract-manifest-v9.json",
-      "bytes": 3497,
-      "sha256": "73a27422b116a0d8ac54a10fb90510d49c86e7bd66eb3422fc95a975b8cef0a3"
+    "server_head": "53b0dcc6d176a56746d9da3ab64a65c21c434348",
+    "server_manifest_v10": {
+      "path": "pkg/permissionbundle/contracts/contract-manifest-v10.json",
+      "bytes": 4216,
+      "sha256": "2baf35e17437ee3aeaf1467e762bb6839a775bd1daac2273b905b96265ef7b05"
     },
-    "server_handoff_v9": {
-      "path": "pkg/permissionbundle/contracts/handoff-v9.json",
-      "bytes": 15865,
-      "sha256": "4aeec7c60356e98dddafb320652c8c680aa919a306856e9b5215e67751a107d9"
+    "server_handoff_v10": {
+      "path": "pkg/permissionbundle/contracts/handoff-v10.json",
+      "bytes": 10103,
+      "sha256": "6fa4c5aad2e4e1d30d3ca451b832c1f65897c5920e909962c305d2b817857c82"
     },
-    "server_remaining_producers_v7": {
-      "path": "pkg/permissionbundle/contracts/remaining-producers-v7.json",
-      "bytes": 4673,
-      "sha256": "15db201703b72e9e8f1afcbc6524d02d6edca019410f99cd2aaa20e8831d0bd3"
+    "server_remaining_producers_v8": {
+      "path": "pkg/permissionbundle/contracts/remaining-producers-v8.json",
+      "bytes": 4069,
+      "sha256": "1c926424a547142640e117e62b3151f6702478a7fdd52952c25542e35d05dd91"
     },
     "server_native_facts_schema_v1": {
       "path": "pkg/permissionbundle/contracts/permission-native-facts-v1.schema.json",
@@ -136,15 +141,16 @@
     "A_B6_server_token_permit_schema": "src/permissions/endpoint-factory.ts:576-581 validates primary.permit against octo-server's real #/$defs/Token schema (^[A-Za-z0-9_-]{1,512}$ in permission-native-facts-v1.schema.json), accepting octo-server f3cf3a13's 43-char base64url HMAC-SHA256 permit without requiring an invented pmt1- prefix",
     "A_B7_bwrap_unshare_pid_and_configured_http_pins": "src/permissions/worker-launch.ts:268-276 includes --unshare-pid in bwrapBaseArgs, and src/permissions/endpoint-factory.ts:1063-1142 propagates and enforces configured hostConfig relay_ca/peer_ca, relay_ca_sha256, relay_cert_sha256/relay_peer_sha256, and relay_server_name on HTTP TurnRelay even when optional open_relay reply fields (tls, ca_sha256, peer_sha256) are omitted",
     "XIN_2858_native_startup_recovery_binding": "Removed synthetic-only syntheticRecoveryFence / PERMISSION_NATIVE_RECOVERY_FENCE_UNAVAILABLE from createNativeEndpointDriver and implemented authenticated native recovery against GET /v1/bot/permission-bundle/v1?space_id=<space_id> (no-store, canonical JSON + SHA-256 bundle_digest verification, key + scope_incarnation + catalog pin validation) coupled with ReplayJournal.bindLineage HMAC-SHA256 lineage pinning in permission_replay_lineage before coordinator/socket/model readiness; refuses missing/corrupt/stale/wrong-incarnation state without auto-provisioning or evicting replay entries",
+    "XIN_2858_UE_recovery_compatibility": "verifyNativeSelfBundle in src/permissions/endpoint-factory.ts validates authenticated Server 53b0dcc6 wire stages U/E (independent invocation and capability planes: U requires rules.length === 0, E allows 0..128 rules with strict InvocationRule/CapabilityRule schema, sorted/unique rule_ids, callers, sources, and capabilities, and snapshot selector/capability ceilings 4096/1024) and normalizes wire U/E to unconfigured/configured only at the Agent boundary via recoveredStages()",
     "shutdown_drain_order": "src/index.ts drains router.stopTurns() and gateway.stop(activeHandlers) before permissionEndpoint.stop()"
   },
   "residual_classification": {
     "code_defects": [],
     "sibling_synchronization": [
-      "octo-server (XIN-2793 = 6a92a547-cb82-4c3d-ac6c-8f5529028ba4, Draft #951 at f3cf3a13a29c3f85be14e4b794d1a0836b54a9dc) and octo-cli (XIN-2794 = 229ad215-8526-4a04-8f5b-36f073f81a16, Draft #234 at 6b116ee532ab664e6b9380c5829f03dd7619f965) XIN-2858 native startup slices are in progress; endpoint XIN-2858 native startup repair is verified against octo-server f3cf3a13a29c3f85be14e4b794d1a0836b54a9dc and octo-cli 6b116ee532ab664e6b9380c5829f03dd7619f965"
+      "Pinned Server (XIN-2793 = 6a92a547-cb82-4c3d-ac6c-8f5529028ba4, head 53b0dcc6d176a56746d9da3ab64a65c21c434348) and CLI (XIN-2794 = 229ad215-8526-4a04-8f5b-36f073f81a16, head 424942e82934a105ed011830d5a482cb0682bd49) remain unchanged; endpoint U/E recovery compatibility is verified against both exact pins"
     ],
     "independent_review": [
-      "Independent exact-head re-review (XIN-2834) on XIN-2795 Draft #102, XIN-2794 Draft #234, and XIN-2793 Draft #951"
+      "Under Charter receipt a6e4d87e-ae08-43e5-a97b-53ddfa0513ea, after verified Agent delivery and containment feasibility on XIN-2858, PjM proceeds directly to isolated deployment and full independent black-box QA"
     ],
     "product_decisions": [
       "Owner decision under XIN-2323 (17e81670-5b49-461d-9509-7c22ca127939) / XIN-2830 (2fd1cf39-ab4d-4da5-aaa0-75161eb9ae52) on delivered unapproved memo 4831fa26-b5de-4dc0-a3dc-79477c891f91 (plus report edd9ad84-f10b-4e1e-9161-19a598bbb153 and overriding addendum 28585cc5-4cc3-47e0-b3a5-17f81ac55b75): ordinary-SQL known restore / manual review semantics, historical original-visibility & untagged legacy DM history/reference scope (remaining-producers-v7.json), and replay identity deltas (zero octo-im/WukongIM changes or external consensus/election/fence platform are permitted)",
@@ -156,10 +162,10 @@
     ]
   },
   "verification": {
-    "regression": "7 permission test files (81 tests across permission-producer-abi.test.ts, permission-replay-journal.test.ts, permission-worker-launch.test.ts, permission-context-assembler.test.ts, permission-host.test.ts, permission-wksocket-ack.test.ts, and permission-startup-gate.test.ts) passed",
+    "regression": "7 permission test files (82 tests across permission-producer-abi.test.ts, permission-replay-journal.test.ts, permission-worker-launch.test.ts, permission-context-provenance.test.ts, permission-endpoint-host.test.ts, permission-control-client.test.ts, and permission-catalog-boot.test.ts) passed",
     "checks": "build, lint, type-check, and tsconfig.permission-tests.json pass; clean merge-tree against upstream/main 2f4d0521bcae9e15c008c29e290427de5813e8d2",
-    "actual_cli": "6b116ee532ab664e6b9380c5829f03dd7619f965 actual Go host + HTTP, stdio (rebound ticket preserving max_response_bytes), and HTTPS TLS (postHttpTurnRelay + startTurnRelayBridge including HTTP 202 Accepted empty-body notifications/initialized + TurnRelayTrust ca_file/ca_sha256/cert_sha256/peer_sha256/server_name): positive & negative receiving-connection custom-CA/leaf-pin checks, binary/relay acquisition budget (MaxAcquisitionBytes=512 Content-Length + streaming) and lower-boundary replacement envelope (MinSerializedRPCBudgetBytes=1024), 218,289-byte 255-Header Turn 1 core, Turn 2 prior_generation reuse (256-Header union), Turn 3 epoch-rotation reset, Turn 4 Stage 1 invocation_denied before model work, and Journey 3 denied capability with 0 backend dispatches",
-    "cross_repo_server_cli": "Consumed octo-server Round 2 head f3cf3a13a29c3f85be14e4b794d1a0836b54a9dc (handoff-v9.json, contract-manifest-v9.json, remaining-producers-v7.json, permission-native-facts-v1.schema.json) and verified octo-cli 6b116ee532ab664e6b9380c5829f03dd7619f965 TestXIN2795CurrentEndpointChunkAndRelayABI (http, stdio, https_tls) on unmodified archive",
+    "actual_cli": "424942e82934a105ed011830d5a482cb0682bd49 actual Go host + HTTP, stdio (rebound ticket preserving max_response_bytes), and HTTPS TLS (postHttpTurnRelay + startTurnRelayBridge including HTTP 202 Accepted empty-body notifications/initialized + TurnRelayTrust ca_file/ca_sha256/cert_sha256/peer_sha256/server_name): positive & negative receiving-connection custom-CA/leaf-pin checks, binary/relay acquisition budget (MaxAcquisitionBytes=512 Content-Length + streaming) and lower-boundary replacement envelope (MinSerializedRPCBudgetBytes=1024), 218,289-byte 255-Header Turn 1 core, Turn 2 prior_generation reuse (256-Header union), Turn 3 epoch-rotation reset, Turn 4 Stage 1 invocation_denied before model work, and Journey 3 denied capability with 0 backend dispatches",
+    "cross_repo_server_cli": "Consumed octo-server head 53b0dcc6d176a56746d9da3ab64a65c21c434348 (handoff-v10.json, contract-manifest-v10.json, remaining-producers-v8.json, permission-wire-v1.schema.json) and verified octo-cli 424942e82934a105ed011830d5a482cb0682bd49 TestXIN2795CurrentEndpointChunkAndRelayABI (http, stdio, https_tls) on unmodified archive",
     "evidence": ["docs/evidence/xin-2795-v50-smoke.png", "docs/evidence/xin-2795-v50-browser.json", "docs/evidence/xin-2795-v50-cli.log"]
   },
   "production_activation": "FAIL_CLOSED_UNTIL_OWNER_DECISIONS_AND_SERVER_PRODUCTION_ACTIVATION",
