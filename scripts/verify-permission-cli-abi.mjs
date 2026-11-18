@@ -1,14 +1,16 @@
 // Usage: npm run build; node scripts/verify-permission-cli-abi.mjs /absolute/task-local/CLI-archive [exact CLI head]
 // The caller prepares the exact pinned source archive. Never modifies a checkout.
-import { constants, copyFileSync, existsSync, unlinkSync, readFileSync } from 'node:fs';
+import { constants, copyFileSync, existsSync, realpathSync, unlinkSync, readFileSync } from 'node:fs';
 import { resolve, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
-const source = process.argv[2];
-if (!source || !isAbsolute(source) || existsSync(join(source, '.git'))) throw new Error('Explicit task-local CLI source archive required');
-const revision = process.argv[3] ?? '30a8991c0bbbdfd42399e07dadbb60c74b26c3b4';
+const rawSource = process.argv[2];
+if (!rawSource || !isAbsolute(rawSource)) throw new Error('Explicit task-local CLI source archive required');
+const source = realpathSync(rawSource);
+if (existsSync(join(source, '.git'))) throw new Error('Explicit task-local CLI source archive required');
+const revision = process.argv[3] ?? '6b116ee532ab664e6b9380c5829f03dd7619f965';
 const versions = {
   '14f9b53d3932c532d6424e8783bd94528e5f7fc6': {
     'internal/mcp/permission_relay.go': '864a57424f7076b157bbd596f88cce8f5d98245afdb546ea72ed706165d6519e',
@@ -67,6 +69,19 @@ const versions = {
     'docs/permission/endpoint-abi-v2.json': '7fc8534000d299fd3e03e85f9c22ba7b5a5f699e4009ee00b27ee10c19dbcb32',
     'docs/permission/cli-component-contract-v6.json': '1b840f6b2bb97f3a06a83754de0b506dffc0a64174d7c24b9212ceaf139e9409',
     'docs/permission/contract-manifest-v6.json': 'e8f916b7f0b7551691b4359e0643bcbe9e6f51b0d10763232dd6b11805ce8d38',
+    'docs/permission/response-budget-ledger-v6.json': '7c46334eacc9796c003c6929373033359e0428ed57d74a07244db84a7837e463',
+    'docs/permission/catalog-package-v2/manifest.json': 'ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc',
+    'docs/permission/source-slot-witness-v5.json.gz': '0c5da173bd0f53c64562a70a5c5feebc955ad111bbe84ed11f5588c08b4b9c0b',
+  },
+  '6b116ee532ab664e6b9380c5829f03dd7619f965': {
+    'internal/mcp/permission_relay.go': '825c2160c90486a7be3da3ff85890e7ab8785097b93812bff9310eb6b5955174',
+    'internal/mcp/permission_host.go': 'a19f29020a9e0ab0a128380ee10cb2a41665ab305ca45ebddde48c7a2260d7ee',
+    'internal/mcp/managed.go': '66d4a9a574865d198021194801130caf9e58aa3722c529b0539d06c9d28efca4',
+    'internal/permission/coordinator.go': '6a5d7c78d76986d642c6cb2a732041a5868abbe18facb99a4dab1ca7dabf9b4e',
+    'internal/permission/runtime.go': 'fd32da12d9a6d0394b8e93c8c2f610bdf636b61498d6d084e4e61e7aeac12097',
+    'docs/permission/endpoint-abi-v2.json': '49b2ed31a4c78a7a7cee3957ea60aa7c6370ac8103d2896d297025c24b17fcb2',
+    'docs/permission/cli-component-contract-v6.json': '49dc2d92928cf673998c433931610ff685523929cd90b97864693fc4cbef5fc4',
+    'docs/permission/contract-manifest-v6.json': 'a3ac8716286ecd91514c74abb780fd8b4210ff3a1da248c02dc4f7b4cacb438d',
     'docs/permission/response-budget-ledger-v6.json': '7c46334eacc9796c003c6929373033359e0428ed57d74a07244db84a7837e463',
     'docs/permission/catalog-package-v2/manifest.json': 'ecc56c2ab0a2c520ab7e5203d2abab06671daf90c28d69f88fe1de8d154109fc',
     'docs/permission/source-slot-witness-v5.json.gz': '0c5da173bd0f53c64562a70a5c5feebc955ad111bbe84ed11f5588c08b4b9c0b',

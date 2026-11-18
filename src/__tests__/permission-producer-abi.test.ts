@@ -15,6 +15,7 @@ import { startPermissionCoordinator, type CoordinatorBoot } from '../permissions
 import { checkedTurnRelay, createNativeEndpointDriver, managedPermissionFactory } from '../permissions/endpoint-factory.js';
 import { privateFile } from '../permissions/private-files.js';
 import { createAdapter } from '../db-adapter.js';
+import { startBot } from '../index.js';
 import type { Config } from '../config.js';
 import type { PermissionEndpoint } from '../permissions/endpoint-host.js';
 
@@ -399,6 +400,16 @@ describe('private bootstrap and relay selection', () => {
     let replySendAllowed = true;
     let admitVersionExact = true;
     let overridePermit: string | null = null;
+    let selfBundleStatus = 503;
+    let selfBundleCacheControl = 'private, no-store';
+    let selfBundleCorruptDigest = false;
+    let bundleScopeIncarnation = '5'.repeat(32);
+    let bundleRevision = '1';
+    let bundleContextEpoch = '1';
+    const selfBundleReads: Array<{ spaceId: string | null; cacheControl: string | undefined }> = [];
+    const coordStatePath = join(root, 'coord-mode.json');
+    writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'allow', contextEpoch: '1', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
+
     const msgUnknownVis: BotMessage = {
       message_id: '776', message_seq: 10, from_uid: 'alice', channel_id: 'alice@bot',
       channel_type: ChannelType.DM, timestamp: 1, payload: { type: 1, content: 'UNKNOWN_ORIGINAL_VISIBILITY' },
@@ -410,6 +421,22 @@ describe('private bootstrap and relay selection', () => {
     };
     const rawPayloadJson = JSON.stringify(msg.payload);
     const payloadSha256 = createHash('sha256').update(rawPayloadJson).digest('hex');
+    const msgDeniedBeforeModel: BotMessage = {
+      message_id: '778', message_seq: 12, from_uid: 'alice', channel_id: 'alice@bot',
+      channel_type: ChannelType.DM, timestamp: 1, payload: { type: 1, content: 'DENIED_BEFORE_MODEL' },
+    };
+    const payloadShaDenied = createHash('sha256').update(JSON.stringify(msgDeniedBeforeModel.payload)).digest('hex');
+    const msgRevokedNextAction: BotMessage = {
+      message_id: '780', message_seq: 13, from_uid: 'alice', channel_id: 'alice@bot',
+      channel_type: ChannelType.DM, timestamp: 1, payload: { type: 1, content: 'REVOKED_ON_NEXT_ACTION' },
+    };
+    const payloadShaRevoked = createHash('sha256').update(JSON.stringify(msgRevokedNextAction.payload)).digest('hex');
+    const msgInterruptedCrash: BotMessage = {
+      message_id: '781', message_seq: 14, from_uid: 'alice', channel_id: 'alice@bot',
+      channel_type: ChannelType.DM, timestamp: 1, payload: { type: 1, content: 'INTERRUPTED_IN_FLIGHT' },
+    };
+    const payloadShaInterrupted = createHash('sha256').update(JSON.stringify(msgInterruptedCrash.payload)).digest('hex');
+
     const authorities = [
       {
         authority_id: 'im',
@@ -461,6 +488,69 @@ describe('private bootstrap and relay selection', () => {
       payload_sha256: payloadSha256,
       delivery: { stream_id: 'dm:1:alice@bot', stream_incarnation: 'b'.repeat(32), sequence: '11' },
     };
+    const header778 = {
+      header_version: 1 as const,
+      header_reference: 'h1-native_hdr_778',
+      message_id: '778',
+      source: { kind: 'dm' as const, id: 'alice@bot' },
+      parent_group: null,
+      space_id: 'space',
+      author_uid: 'alice',
+      author_kind: 'human' as const,
+      recipient_bot_uid: 'bot',
+      native_message_version: `x1_${payloadShaDenied.slice(0, 16)}`,
+      payload_sha256: payloadShaDenied,
+      delivery: { stream_id: 'dm:1:alice@bot', stream_incarnation: 'b'.repeat(32), sequence: '12' },
+    };
+    const header780 = {
+      header_version: 1 as const,
+      header_reference: 'h1-native_hdr_780',
+      message_id: '780',
+      source: { kind: 'dm' as const, id: 'alice@bot' },
+      parent_group: null,
+      space_id: 'space',
+      author_uid: 'alice',
+      author_kind: 'human' as const,
+      recipient_bot_uid: 'bot',
+      native_message_version: `x1_${payloadShaRevoked.slice(0, 16)}`,
+      payload_sha256: payloadShaRevoked,
+      delivery: { stream_id: 'dm:1:alice@bot', stream_incarnation: 'b'.repeat(32), sequence: '13' },
+    };
+    const header781 = {
+      header_version: 1 as const,
+      header_reference: 'h1-native_hdr_781',
+      message_id: '781',
+      source: { kind: 'dm' as const, id: 'alice@bot' },
+      parent_group: null,
+      space_id: 'space',
+      author_uid: 'alice',
+      author_kind: 'human' as const,
+      recipient_bot_uid: 'bot',
+      native_message_version: `x1_${payloadShaInterrupted.slice(0, 16)}`,
+      payload_sha256: payloadShaInterrupted,
+      delivery: { stream_id: 'dm:1:alice@bot', stream_incarnation: 'b'.repeat(32), sequence: '14' },
+    };
+    const headersByMsgId: Record<string, typeof header> = {
+      '776': header776,
+      '777': header,
+      '778': header778,
+      '780': header780,
+      '781': header781,
+    };
+    const headersByRef: Record<string, typeof header> = {
+      [header776.header_reference]: header776,
+      [header.header_reference]: header,
+      [header778.header_reference]: header778,
+      [header780.header_reference]: header780,
+      [header781.header_reference]: header781,
+    };
+    const headersByDelivRef: Record<string, typeof header> = {
+      's1-deliv_776': header776,
+      's1-deliv_777': header,
+      's1-deliv_778': header778,
+      's1-deliv_780': header780,
+      's1-deliv_781': header781,
+    };
 
     const relayHttpsServer = createHttpsServer({
       key: readFileSync(join(root, 'key.pem')),
@@ -490,13 +580,64 @@ describe('private bootstrap and relay selection', () => {
       for await (const chunk of req) body += String(chunk);
       const parsed = body ? JSON.parse(body) as Record<string, unknown> : {};
       const responseKey = { origin: apiUrl, bot_uid: 'bot', space_id: 'space' };
+      if (req.url === '/v1/bot/register') {
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          robot_id: 'bot',
+          im_token: 'im_tok_synthetic',
+          ws_url: 'ws://localhost:59999/ws',
+          api_url: apiUrl,
+          owner_uid: 'alice',
+        }));
+        return;
+      }
+      if (req.url === '/v1/bot/permission-bundle/v1?space_id=space') {
+        expect(req.method).toBe('GET');
+        expect(req.headers.authorization).toBe(`Bearer ${boot.botToken}`);
+        expect(req.headers['x-space-id']).toBe('space');
+        expect(req.headers['cache-control']).toBe('no-store');
+        expect(req.headers.pragma).toBe('no-cache');
+        selfBundleReads.push({
+          spaceId: 'space',
+          cacheControl: req.headers['cache-control'],
+        });
+        if (selfBundleStatus !== 200) {
+          res.statusCode = selfBundleStatus;
+          res.setHeader('Cache-Control', 'private, no-store');
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.end(JSON.stringify({ error: { code: 'err.server.permission.bundle_unavailable' } }));
+          return;
+        }
+        const unsignedBundle = {
+          schema_version: 1,
+          key: responseKey,
+          scope_incarnation: bundleScopeIncarnation,
+          revision: bundleRevision,
+          context_epoch: bundleContextEpoch,
+          catalog_version: 'synthetic-identity-only',
+          catalog_digest: String(boot.hostConfig.release_sha256),
+          invocation: { state: 'unconfigured', rules: [] },
+          capability: { state: 'unconfigured', rules: [] },
+        };
+        const computedDigest = createHash('sha256').update(canonicalControl(unsignedBundle), 'utf8').digest('hex');
+        const sealedBundle = {
+          ...unsignedBundle,
+          bundle_digest: selfBundleCorruptDigest ? '0'.repeat(64) : computedDigest,
+        };
+        res.statusCode = 200;
+        res.setHeader('Cache-Control', selfBundleCacheControl);
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.end(canonicalControl(sealedBundle));
+        return;
+      }
       if (req.url === '/v1/bot/permission-facts/v1/bind-delivery?space_id=space') {
         expect(parsed.operation).toBe('bind_delivery');
         expect(parsed.schema_version).toBe(1);
         expect(parsed.key).toBeUndefined();
         factsOps.push('bind_delivery');
-        const is776 = parsed.message_id === '776';
-        const targetHeader = is776 ? header776 : header;
+        const msgId = String(parsed.message_id);
+        const targetHeader = headersByMsgId[msgId] ?? header;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
           schema_version: 1,
@@ -509,7 +650,7 @@ describe('private bootstrap and relay selection', () => {
           binding: {
             status: 'bound',
             current: true,
-            delivery_reference: is776 ? 's1-deliv_776' : 's1-deliv_777',
+            delivery_reference: `s1-deliv_${msgId}`,
             header_reference: targetHeader.header_reference,
             native_message_version: targetHeader.native_message_version,
             observed_payload_sha256: targetHeader.payload_sha256,
@@ -556,7 +697,7 @@ describe('private bootstrap and relay selection', () => {
             observed_at: '2026-11-12T00:00:00Z',
             authorities,
             results: reqRefs.map(r => {
-              const target = r.header_reference === header776.header_reference ? header776 : header;
+              const target = headersByRef[r.header_reference] ?? header;
               // octo-server f3cf3a13 ServerMessageFactProvider.permit emits a 43-char base64url HMAC-SHA256 token matching #/$defs/Token (^[A-Za-z0-9_-]{1,512}$)
               const rawPermit = overridePermit ?? createHash('sha256')
                 .update(`${responseKey.bot_uid}:${responseKey.space_id}:${String(parsed.context_id)}:${String(parsed.context_epoch)}:${target.header_reference}:${target.payload_sha256}`)
@@ -595,7 +736,7 @@ describe('private bootstrap and relay selection', () => {
             results: refs.map(r => ({
               reference: r.delivery_reference,
               status: 'resolved',
-              header: r.delivery_reference === 's1-deliv_776' ? header776 : header,
+              header: headersByDelivRef[r.delivery_reference] ?? header,
               profile: `dm_${purpose}_v1`,
               authority_refs: authorityRefs,
               predicates: purpose === 'reply'
@@ -694,10 +835,19 @@ const server = tls.createServer({
       const len = buffer.readUInt32BE();
       const f = JSON.parse(buffer.subarray(4, len + 4).toString('utf8'));
       buffer = buffer.subarray(len + 4);
+      let status = 'ok';
       let payload = { fixture: true };
+      const coordState = JSON.parse(readFileSync(${JSON.stringify(coordStatePath)}, 'utf8'));
       if (f.method === 'hello') payload = { session_id: f.session_id, selected_binding: 2, selected_metadata: 2, selected_identity: 2, coordinator_incarnation: id };
       else if (f.method === 'register_ingress') payload = { ingress_id: '1'.repeat(32) };
-      else if (f.method === 'admit') payload = { capsule_id: '2'.repeat(32), turn_id: '3'.repeat(32), generation: '4'.repeat(32), scope_incarnation: '5'.repeat(32), context_epoch: '1' };
+      else if (f.method === 'admit') {
+        if (coordState.admitMode === 'deny') {
+          status = 'refused';
+          payload = { version: 1, category: 'invocation_denied', correlation: 'd'.repeat(32) };
+        } else {
+          payload = { capsule_id: '2'.repeat(32), turn_id: '3'.repeat(32), generation: '4'.repeat(32), scope_incarnation: coordState.scopeIncarnation, context_epoch: coordState.contextEpoch };
+        }
+      }
       else if (f.method === 'bind_context') payload = { context_generation: '4'.repeat(32) };
       else if (f.method === 'renew') payload = { lease_expires_at: new Date(Date.now() + 60000).toISOString() };
       else if (f.method === 'open_relay') payload = {
@@ -717,7 +867,7 @@ const server = tls.createServer({
         } : {}),
       };
       else if (f.method === 'close') payload = {};
-      const b = Buffer.from(canonical({ control_version: 1, request_id: f.request_id, status: 'ok', payload }));
+      const b = Buffer.from(canonical({ control_version: 1, request_id: f.request_id, status, payload }));
       const n = Buffer.alloc(4);
       n.writeUInt32BE(b.length);
       socket.write(Buffer.concat([n, b]));
@@ -827,12 +977,31 @@ let mcpStatus = 'NO_MCP';
       cards: { disable: false, eventTransport: 'off', reasoningSummary: 'off' },
       sdk: {},
     };
-    const db = createAdapter(join(root, 'journal-full.db'));
+    let db = createAdapter(join(root, 'journal-full.db'));
     let endpoint: PermissionEndpoint | undefined;
     try {
-      // Default NativeEndpointDriver.recover fails closed without calling any unmounted /fence route
-      await expect(managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' })).rejects.toThrow('PERMISSION_NATIVE_RECOVERY_FENCE_UNAVAILABLE');
+      // Negative startup checks:
+      // (a) Lost/unavailable native server state (HTTP 503) fails closed before provisioning local journal
+      await expect(managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' }))
+        .rejects.toThrow('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: HTTP 503');
+      expect(selfBundleReads).toHaveLength(1);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
       expect(factsOps).toEqual([]);
+
+      // (b) Cached response lacking Cache-Control: no-store is rejected
+      selfBundleStatus = 200;
+      selfBundleCacheControl = 'public, max-age=60';
+      await expect(managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' }))
+        .rejects.toThrow('cached or encoded recovery response rejected');
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
+
+      // (c) Corrupt bundle_digest is rejected
+      selfBundleCacheControl = 'private, no-store';
+      selfBundleCorruptDigest = true;
+      await expect(managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' }))
+        .rejects.toThrow('self bundle digest mismatch');
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
+      selfBundleCorruptDigest = false;
 
       const realNative = createNativeEndpointDriver({ config, botId: 'bot', key: descriptor.key });
       // Rejects message_seq <= 0 before any HTTP request
@@ -843,10 +1012,13 @@ let mcpStatus = 'NO_MCP';
       })).rejects.toThrow('Native delivery transport observation incomplete');
       expect(factsOps).toEqual([]);
 
-      // Compose endpoint with realNative (overriding only startup recover gate) and real ContainedWorkerDriver
-      endpoint = await managedPermissionFactory(config, {
-        native: { ...realNative, recover: async () => {} },
-      })!({ config, adapter: db, botId: 'bot' });
+      // Normal startup with ZERO dependency overrides: default NativeEndpointDriver.recover
+      // authenticates against GET /v1/bot/permission-bundle/v1?space_id=space, binds durable
+      // ReplayJournal lineage, runs recoverInterrupted(), and starts the private coordinator.
+      endpoint = await managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' });
+      expect(selfBundleReads).toHaveLength(4);
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_lineage'").get())
+        .toEqual({ name: 'permission_replay_lineage' });
 
       // 1. When bind_delivery reports bot_original_visible / caller_original_visible in unknown_predicates,
       // prepareInput fails closed and sends refusal via operation="resolve", purpose="reply" without starting worker.
@@ -861,10 +1033,26 @@ let mcpStatus = 'NO_MCP';
       expect(String((sentMessages[0].payload as Record<string, unknown>).content)).toContain('Permissions could not be checked. Try again later.');
       expect(relayMcpBodies).toHaveLength(0);
 
-      // 2. When original visibility is proven and history_disclosure returns status="resolved" with permit,
+      // 2. Stage 1 admission denied before model work: when coordinator admit returns invocation_denied,
+      // EndpointPermissionHost refuses before prepareInput / history_disclosure / open_relay / worker launch.
+      proveOriginalVisibility = true;
+      writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'deny', contextEpoch: '1', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
+      const resDenied = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msgDeniedBeforeModel, payloadSha256: payloadShaDenied });
+      expect(resDenied.disposition).toBe('reserved');
+      if (resDenied.disposition === 'reserved') {
+        const disp = await endpoint.handle(msgDeniedBeforeModel);
+        expect(disp).toBe('terminal');
+        resDenied.finish(disp);
+      }
+      expect(factsOps).toEqual(['bind_delivery', 'resolve:reply', 'bind_delivery', 'resolve:reply']);
+      expect(sentMessages).toHaveLength(2);
+      expect(String((sentMessages[1].payload as Record<string, unknown>).content)).toContain('This Agent cannot accept this request here.');
+      expect(relayMcpBodies).toHaveLength(0);
+
+      // 3. When Stage 1 admits, original visibility is proven, and history_disclosure returns status="resolved" with permit,
       // full pipeline executes worker (whose MCP HTTP request traverses startTurnRelayBridge -> postHttpTurnRelay
       // to relayHttpsServer with custom CA + server_name + leaf pin) and publishes reply.
-      proveOriginalVisibility = true;
+      writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'allow', contextEpoch: '1', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
       const res = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msg, payloadSha256 });
       expect(res.disposition).toBe('reserved');
       if (res.disposition === 'reserved') {
@@ -872,11 +1060,15 @@ let mcpStatus = 'NO_MCP';
         expect(disp).toBe('terminal');
         res.finish(disp);
       }
-      expect(factsOps).toEqual(['bind_delivery', 'resolve:reply', 'bind_delivery', 'history_disclosure', 'resolve:admit', 'resolve:reply']);
+      expect(factsOps).toEqual([
+        'bind_delivery', 'resolve:reply',
+        'bind_delivery', 'resolve:reply',
+        'bind_delivery', 'history_disclosure', 'resolve:admit', 'resolve:reply',
+      ]);
       expect(relayMcpBodies).toHaveLength(1);
       expect(relayMcpBodies[0]).toMatchObject({ jsonrpc: '2.0', id: 77, method: 'tools/list' });
-      expect(sentMessages).toHaveLength(2);
-      expect(sentMessages[1]).toMatchObject({
+      expect(sentMessages).toHaveLength(3);
+      expect(sentMessages[2]).toMatchObject({
         channel_id: 'alice@bot',
         channel_type: ChannelType.DM,
         payload: {
@@ -886,8 +1078,93 @@ let mcpStatus = 'NO_MCP';
         },
       });
 
-      // 3. Direct driver conformance checks for revalidateOriginal (purpose='admit'), false reply predicates,
-      // and multi-contributor metadata-only disclosure permit fail-closed behavior.
+      // 4. Revoked policy on next action: after turn 777 succeeds, revoking policy (revision='2', context_epoch='2', admitMode='deny')
+      // immediately blocks the next action (780) before model work without reusing any prior grant.
+      bundleRevision = '2';
+      bundleContextEpoch = '2';
+      writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'deny', contextEpoch: '2', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
+      const resRevoked = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msgRevokedNextAction, payloadSha256: payloadShaRevoked });
+      expect(resRevoked.disposition).toBe('reserved');
+      if (resRevoked.disposition === 'reserved') {
+        const disp = await endpoint.handle(msgRevokedNextAction);
+        expect(disp).toBe('terminal');
+        resRevoked.finish(disp);
+      }
+      expect(relayMcpBodies).toHaveLength(1);
+      expect(sentMessages).toHaveLength(4);
+      expect(String((sentMessages[3].payload as Record<string, unknown>).content)).toContain('This Agent cannot accept this request here.');
+      writeFileSync(coordStatePath, JSON.stringify({ admitMode: 'allow', contextEpoch: '2', scopeIncarnation: '5'.repeat(32) }), { mode: 0o600 });
+
+      // 5. Replay suppression across same-store normal process restart + failure on lost state or wrong incarnation:
+      // Leave delivery 781 reserved in-flight before process stop/restart.
+      const resInterrupted = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msgInterruptedCrash, payloadSha256: payloadShaInterrupted });
+      expect(resInterrupted.disposition).toBe('reserved');
+      await endpoint.stop();
+      endpoint = undefined;
+      db.close();
+
+      // Switch descriptor to non-provisioning normal restart mode (provision: false).
+      writeFileSync(
+        join(botDir, 'permission-endpoint.json'),
+        canonicalControl({ ...descriptor, journal: { ...descriptor.journal, provision: false } }),
+        { mode: 0o600 },
+      );
+
+      // (5a) Missing local journal on recovery (provision: false) fails closed without auto-provisioning
+      const dbMissing = createAdapter(join(root, 'journal-missing.db'));
+      try {
+        await expect(managedPermissionFactory(config)!({ config, adapter: dbMissing, botId: 'bot' }))
+          .rejects.toThrow('Replay journal missing');
+        expect(dbMissing.prepare("SELECT name FROM sqlite_master WHERE name='permission_replay_meta'").get()).toBeUndefined();
+      } finally {
+        dbMissing.close();
+      }
+
+      // (5b) Wrong scope_incarnation across restart on the existing store fails closed before coordinator startup
+      bundleScopeIncarnation = '9'.repeat(32);
+      const dbWrongInc = createAdapter(join(root, 'journal-full.db'));
+      try {
+        await expect(managedPermissionFactory(config)!({ config, adapter: dbWrongInc, botId: 'bot' }))
+          .rejects.toThrow('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: Replay journal lineage mismatch');
+      } finally {
+        dbWrongInc.close();
+      }
+
+      // (5c) Normal restart on the same durable store and matching scope_incarnation ('5'.repeat(32)) succeeds,
+      // suppresses duplicate replay of terminal 777, and fences interrupted 781 as unavailable ('uncertain') without eviction.
+      bundleScopeIncarnation = '5'.repeat(32);
+      db = createAdapter(join(root, 'journal-full.db'));
+      endpoint = await managedPermissionFactory(config)!({ config, adapter: db, botId: 'bot' });
+      const replayTerminal = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msg, payloadSha256 });
+      expect(replayTerminal).toEqual({ disposition: 'duplicate' });
+      const replayInterrupted = await endpoint.reserveBeforeAck({ recipientUid: 'bot', message: msgInterruptedCrash, payloadSha256: payloadShaInterrupted });
+      expect(replayInterrupted).toEqual({ disposition: 'unavailable' });
+      expect(db.prepare("SELECT count(*) AS n FROM permission_replay WHERE state='uncertain'").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT count(*) AS n FROM permission_replay WHERE state='terminal'").get()).toEqual({ n: 4 });
+      await endpoint.stop();
+      endpoint = undefined;
+
+      // (5d) Normal entrypoint startBot(config, true) startup verification before socket connect()
+      const startBotDataDir = join(root, 'startbot-data');
+      mkdirSync(startBotDataDir, { mode: 0o700 });
+      writeFileSync(
+        join(botDir, 'permission-endpoint.json'),
+        canonicalControl({ ...descriptor, journal: { ...descriptor.journal, provision: true } }),
+        { mode: 0o600 },
+      );
+      const startBotConfig: Config = { ...config, dataDir: startBotDataDir };
+      const readsBeforeStartBot = selfBundleReads.length;
+      const botStack = await startBot(startBotConfig, true);
+      try {
+        expect(botStack.robotUid).toBe('bot');
+        expect(selfBundleReads.length).toBe(readsBeforeStartBot + 1);
+      } finally {
+        await botStack.shutdown();
+      }
+
+      // 6. Direct driver conformance checks for revalidateOriginal (purpose='admit'), false reply predicates,
+      // scope_incarnation divergence, and multi-contributor metadata-only disclosure permit fail-closed behavior.
+      await realNative.recover(descriptor.key);
       const inspected = await realNative.inspect({ recipientUid: 'bot', message: msg, payloadSha256 });
       const origIdentity = {
         headerReference: inspected.header.header_reference,
@@ -914,6 +1191,10 @@ let mcpStatus = 'NO_MCP';
         scopeIncarnation: '5'.repeat(32),
         contextEpoch: '1',
       };
+      await expect(realNative.prepareInput(
+        { ...binding777, scopeIncarnation: '9'.repeat(32) },
+        new AbortController().signal,
+      )).rejects.toThrow('PERMISSION_NATIVE_SCOPE_INCARNATION_MISMATCH');
       replySendAllowed = false;
       await expect(realNative.publish(binding777, 'SHOULD_NOT_SEND', new AbortController().signal))
         .rejects.toThrow('required reply predicate false');
@@ -923,7 +1204,7 @@ let mcpStatus = 'NO_MCP';
         'Permissions could not be checked. Try again later.',
         new AbortController().signal,
       );
-      expect(sentMessages).toHaveLength(2);
+      expect(sentMessages).toHaveLength(4);
       replySendAllowed = true;
 
       // Historical contributor with metadata-only disclosure permit (no body content) fails closed

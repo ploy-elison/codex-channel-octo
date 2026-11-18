@@ -15,9 +15,19 @@ export interface ReplayIdentity {
   payloadSha256: string;
 }
 
+/** Verified native scope lineage bound to the local replay journal across normal restarts. */
+export interface ReplayLineage {
+  readonly origin: string;
+  readonly botUid: string;
+  readonly spaceId: string;
+  readonly scopeIncarnation: string;
+}
+
 type State = 'reserved' | 'terminal' | 'uncertain';
 interface Row { delivery_key: string; state: State; checksum: string }
+interface LineageRow { key_version: string; lineage_mac: string; checksum: string }
 const HEX = /^[0-9a-f]{64}$/;
+const HEX32 = /^[0-9a-f]{32}$/;
 const U64 = /^(0|[1-9][0-9]{0,19})$/;
 
 /** Four-byte big-endian UTF-8 byte lengths; no delimiter or Unicode folding. */
@@ -97,6 +107,54 @@ export class ReplayJournal {
 
   private readonly maxRecords: number;
   private readonly maxBytes: number;
+
+  /** Bind or verify continuous native scope lineage before exposing recovery or ingress. */
+  bindLineage(lineage: ReplayLineage, options: { provision?: boolean } = {}): void {
+    if (this.failed) throw new Error('Replay journal unavailable');
+    if (!lineage || typeof lineage.origin !== 'string' || !lineage.origin
+      || typeof lineage.botUid !== 'string' || !lineage.botUid
+      || typeof lineage.spaceId !== 'string' || !lineage.spaceId
+      || typeof lineage.scopeIncarnation !== 'string' || !HEX32.test(lineage.scopeIncarnation)) {
+      this.failed = true;
+      throw new Error('Replay journal lineage identity invalid');
+    }
+    const lineageMac = this.mac(['lineage', lineage.origin, lineage.botUid, lineage.spaceId, lineage.scopeIncarnation]);
+    try {
+      this.write(() => {
+        const count = this.verifyMeta();
+        const exists = this.db.prepare(
+          "SELECT name FROM sqlite_master WHERE type='table' AND name='permission_replay_lineage'",
+        ).get();
+        if (!exists) {
+          if (options.provision === false || count > 0) {
+            throw new Error('Replay journal lineage missing');
+          }
+          this.db.exec(`CREATE TABLE permission_replay_lineage (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1),
+            key_version TEXT NOT NULL,
+            lineage_mac TEXT NOT NULL,
+            checksum TEXT NOT NULL
+          );`);
+          this.db.prepare('INSERT INTO permission_replay_lineage VALUES (1, ?, ?, ?)')
+            .run(this.version, lineageMac, this.mac(['lineage_meta', this.version, lineageMac]));
+          return;
+        }
+        const row = this.db.prepare(
+          'SELECT key_version, lineage_mac, checksum FROM permission_replay_lineage WHERE singleton=1',
+        ).get() as LineageRow | undefined;
+        if (!row || row.key_version !== this.version || !HEX.test(row.lineage_mac)
+          || !this.matches(row.checksum, this.mac(['lineage_meta', this.version, row.lineage_mac]))) {
+          throw new Error('Replay journal lineage unavailable');
+        }
+        if (!this.matches(row.lineage_mac, lineageMac)) {
+          throw new Error('Replay journal lineage mismatch');
+        }
+      });
+    } catch (error) {
+      this.failed = true;
+      throw error;
+    }
+  }
 
   /** Called only after exclusive ownership and external native recovery proof. */
   recoverInterrupted(): void {
@@ -189,6 +247,18 @@ export class ReplayJournal {
     if (!meta || meta.key_version !== this.version || !Number.isSafeInteger(meta.record_count)
       || meta.record_count < 0 || !this.matches(meta.checksum, this.mac(['meta', this.version, String(meta.record_count)]))) {
       throw new Error('Replay journal key or metadata unavailable');
+    }
+    const lineageTable = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='permission_replay_lineage'",
+    ).get();
+    if (lineageTable) {
+      const lineage = this.db.prepare(
+        'SELECT key_version, lineage_mac, checksum FROM permission_replay_lineage WHERE singleton=1',
+      ).get() as LineageRow | undefined;
+      if (!lineage || lineage.key_version !== this.version || !HEX.test(lineage.lineage_mac)
+        || !this.matches(lineage.checksum, this.mac(['lineage_meta', this.version, lineage.lineage_mac]))) {
+        throw new Error('Replay journal lineage unavailable');
+      }
     }
     const count = this.db.prepare('SELECT count(*) AS n FROM permission_replay').get() as { n: number };
     if (count.n !== meta.record_count) throw new Error('Replay journal incomplete');

@@ -169,4 +169,52 @@ describe('file-backed FULL-sync replay journal', () => {
     expect(recovered.reserve(delivery).disposition).toBe('unavailable');
     expect(db3.prepare('SELECT state FROM permission_replay').get()).toEqual({ state: 'uncertain' });
   });
+
+  it('pins HMAC-authenticated native scope lineage across normal restart and refuses wrong incarnation, missing lineage or tampering', () => {
+    const lineage = {
+      origin: 'https://synthetic.invalid',
+      botUid: 'synthetic-bot',
+      spaceId: 'synthetic-space',
+      scopeIncarnation: '5'.repeat(32),
+    };
+    const db1 = open();
+    const journal1 = new ReplayJournal(db1, key, '1', { provision: true, exclusive: true });
+    journal1.bindLineage(lineage, { provision: true });
+    const res1 = journal1.reserve(delivery);
+    expect(res1.disposition).toBe('reserved');
+    if (res1.disposition === 'reserved') res1.finish('terminal');
+    expect(readFileSync(file).includes(Buffer.from(lineage.spaceId))).toBe(false);
+    expect(readFileSync(file).includes(Buffer.from(lineage.scopeIncarnation))).toBe(false);
+    db1.close();
+    adapters = [];
+
+    // Normal restart on same store and same scope_incarnation succeeds and preserves duplicate suppression
+    const db2 = open();
+    const journal2 = new ReplayJournal(db2, key, '1', { provision: false, exclusive: true });
+    journal2.bindLineage(lineage, { provision: false });
+    journal2.recoverInterrupted();
+    expect(journal2.reserve(delivery).disposition).toBe('duplicate');
+
+    // Wrong scope_incarnation or space_id on restart fails closed
+    expect(() => journal2.bindLineage({ ...lineage, scopeIncarnation: '9'.repeat(32) }, { provision: false }))
+      .toThrow('Replay journal lineage mismatch');
+    db2.close();
+    adapters = [];
+
+    // Tampering with permission_replay_lineage row fails closed on open
+    const db3 = open();
+    db3.exec("UPDATE permission_replay_lineage SET lineage_mac = '" + 'a'.repeat(64) + "'");
+    expect(() => new ReplayJournal(db3, key, '1', { provision: false, exclusive: true }))
+      .toThrow('Replay journal lineage unavailable');
+    db3.close();
+    adapters = [];
+
+    // Existing replay records without a lineage table refuse auto-provisioning on recovery
+    const unanchoredFile = join(root, 'unanchored.db');
+    const dbUnanchored = createAdapter(unanchoredFile);
+    adapters.push(dbUnanchored);
+    const unanchored = new ReplayJournal(dbUnanchored, key, '1', { provision: true, exclusive: true });
+    expect(unanchored.reserve(delivery).disposition).toBe('reserved');
+    expect(() => unanchored.bindLineage(lineage, { provision: true })).toThrow('Replay journal lineage missing');
+  });
 });

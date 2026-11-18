@@ -9,12 +9,12 @@ import { SessionRouter } from '../session-router.js';
 import { queryAgentEvents } from '../agent-bridge.js';
 import type { ManagedExecution } from '../execution-scope.js';
 import { EndpointPermissionHost, type EndpointBinding, type EndpointHostPorts, type NativeHeader, type NativeIngress, type PermissionEndpoint, type PermissionKey } from './endpoint-host.js';
-import { decodeControl, object, type ControlConnection, type RefusalRecord } from './control-client.js';
+import { canonicalControl, decodeControl, object, type ControlConnection, type RefusalRecord } from './control-client.js';
 import { startPermissionCoordinator, type CoordinatorBoot } from './coordinator-process.js';
 import { privateFile, verifyExecutable } from './private-files.js';
-import { ReplayJournal } from './replay-journal.js';
+import { ReplayJournal, type ReplayLineage } from './replay-journal.js';
 import { createIsolatingWorkerLauncher, preparePrivateWorker, startTurnRelayBridge, validRelayServerName, type PrivateWorkerLaunch, type TurnRelay, type TurnRelayBridge, type TurnRelayTrust } from './worker-launch.js';
-import { catalogBootPin, verifyCatalogBoot } from './catalog-boot.js';
+import { catalogBootPin, verifyCatalogBoot, type CatalogBootPin } from './catalog-boot.js';
 import type { OriginalIdentity } from './context-provenance.js';
 import type { ReceivedDelivery } from './ingress-reservation.js';
 
@@ -25,6 +25,8 @@ export interface NativeEndpointDriver extends Pick<EndpointHostPorts,
   /** Validate exclusive host ownership and authoritative native restore fence
    * before journal recovery or exposing the socket. This is not an allow bit. */
   recover(key: Readonly<PermissionKey>): Promise<void>;
+  /** Verified native scope lineage established by recover(), used to bind the local replay journal. */
+  recoveredLineage?(): Readonly<ReplayLineage> | undefined;
 }
 export interface ContainedWorkerDriver {
   /** Own the actual isolated launch AND input/model/publication boundary;
@@ -44,12 +46,7 @@ export interface NativeEndpointDriverOptions {
   readonly ownerUid?: string;
   readonly router?: SessionRouter;
   readonly fetchImpl?: typeof fetch;
-  /** Isolated synthetic test hook only; production startup has no recovery fence route on octo-server v7. */
-  readonly syntheticRecoveryFence?: Readonly<{
-    readonly sql_incarnation: string;
-    readonly im_incarnation: string;
-    readonly ack_before_read_start: boolean;
-  }>;
+  readonly expectedCatalog?: Readonly<CatalogBootPin>;
 }
 
 export interface ContainedWorkerDriverOptions {
@@ -64,8 +61,10 @@ export interface ContainedWorkerDriverOptions {
   readonly runQuery?: typeof queryAgentEvents;
 }
 
+const NATIVE_SELF_BUNDLE_PATH = '/v1/bot/permission-bundle/v1';
 const NATIVE_FACTS_PATH = '/v1/bot/permission-facts/v1';
 const NATIVE_BIND_DELIVERY_PATH = '/v1/bot/permission-facts/v1/bind-delivery';
+const MAX_BUNDLE_BYTES = 262_144;
 
 function channelTypeForSource(kind: NativeHeader['source']['kind']): ChannelType {
   if (kind === 'dm') return ChannelType.DM;
@@ -281,6 +280,94 @@ interface BoundDeliveryRecord {
   readonly resolvablePurposes: readonly string[];
 }
 
+function verifyNativeSelfBundle(
+  parsed: unknown,
+  rawText: string,
+  expectedKey: Readonly<PermissionKey>,
+  expectedCatalog?: Readonly<CatalogBootPin>,
+): {
+  readonly scopeIncarnation: string;
+  readonly revision: string;
+  readonly contextEpoch: string;
+  readonly catalogVersion: string;
+  readonly catalogDigest: string;
+  readonly bundleDigest: string;
+} {
+  let obj: Record<string, unknown>;
+  try {
+    obj = object(parsed, [
+      'schema_version',
+      'key',
+      'scope_incarnation',
+      'revision',
+      'context_epoch',
+      'catalog_version',
+      'catalog_digest',
+      'bundle_digest',
+      'invocation',
+      'capability',
+    ]);
+  } catch {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: malformed self bundle');
+  }
+  if (obj.schema_version !== 1
+    || typeof obj.scope_incarnation !== 'string' || !/^[0-9a-f]{32}$/.test(obj.scope_incarnation)
+    || typeof obj.revision !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(obj.revision)
+    || BigInt(obj.revision) > 18_446_744_073_709_551_615n
+    || typeof obj.context_epoch !== 'string' || !/^(0|[1-9][0-9]{0,19})$/.test(obj.context_epoch)
+    || BigInt(obj.context_epoch) > 18_446_744_073_709_551_615n
+    || typeof obj.catalog_version !== 'string' || !/^[\x21-\x7e]{1,64}$/.test(obj.catalog_version)
+    || typeof obj.catalog_digest !== 'string' || !/^[0-9a-f]{64}$/.test(obj.catalog_digest)
+    || typeof obj.bundle_digest !== 'string' || !/^[0-9a-f]{64}$/.test(obj.bundle_digest)) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid self bundle fields');
+  }
+  const keyObj = object(obj.key, ['origin', 'bot_uid', 'space_id']);
+  if (keyObj.origin !== expectedKey.origin
+    || keyObj.bot_uid !== expectedKey.bot_uid
+    || keyObj.space_id !== expectedKey.space_id) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: self bundle key mismatch');
+  }
+  if (expectedCatalog
+    && (obj.catalog_version !== expectedCatalog.catalog_version
+      || obj.catalog_digest !== expectedCatalog.catalog_digest)) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: self bundle catalog pin mismatch');
+  }
+  for (const stageKey of ['invocation', 'capability'] as const) {
+    const stage = object(obj[stageKey], ['state', 'rules']);
+    if ((stage.state !== 'unconfigured' && stage.state !== 'configured')
+      || !Array.isArray(stage.rules)
+      || stage.rules.length > 128
+      || (stage.state === 'unconfigured') !== (stage.rules.length === 0)) {
+      throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid ${stageKey} stage`);
+    }
+  }
+  let canonicalFull: string;
+  let canonicalWithoutDigest: string;
+  try {
+    canonicalFull = canonicalControl(obj);
+    const withoutDigest: Record<string, unknown> = { ...obj };
+    delete withoutDigest.bundle_digest;
+    canonicalWithoutDigest = canonicalControl(withoutDigest);
+  } catch {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: noncanonical self bundle');
+  }
+  if (canonicalFull !== rawText.trim()) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: noncanonical self bundle framing');
+  }
+  const expectedDigest = createHash('sha256').update(canonicalWithoutDigest, 'utf8').digest('hex');
+  if (expectedDigest !== obj.bundle_digest) {
+    throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: self bundle digest mismatch');
+  }
+  return {
+    scopeIncarnation: obj.scope_incarnation,
+    revision: obj.revision,
+    contextEpoch: obj.context_epoch,
+    catalogVersion: obj.catalog_version,
+    catalogDigest: obj.catalog_digest,
+    bundleDigest: obj.bundle_digest,
+  };
+}
+
 export function createNativeEndpointDriver(options: NativeEndpointDriverOptions): NativeEndpointDriver {
   const expectedKey = Object.freeze({ ...options.key });
   const router = options.router ?? new SessionRouter(options.config, options.botId, options.ownerUid ?? '');
@@ -288,6 +375,7 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
   const apiUrl = options.config.apiUrl.replace(/\/+$/, '');
   const botToken = options.config.botToken;
   const boundDeliveryByHeaderRef = new Map<string, BoundDeliveryRecord>();
+  let recoveredLineage: Readonly<ReplayLineage> | undefined;
 
   async function callNativeEndpoint(
     routePath: string,
@@ -327,26 +415,71 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
   }
 
   return {
+    recoveredLineage(): Readonly<ReplayLineage> | undefined {
+      return recoveredLineage;
+    },
+
     async recover(key: Readonly<PermissionKey>): Promise<void> {
       if (key.origin !== expectedKey.origin || key.bot_uid !== expectedKey.bot_uid || key.space_id !== expectedKey.space_id) {
         throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: key mismatch');
       }
-      if (options.syntheticRecoveryFence) {
-        const rf = options.syntheticRecoveryFence;
-        if (typeof rf.sql_incarnation !== 'string' || !/^[0-9a-f]{32}$/.test(rf.sql_incarnation)
-          || typeof rf.im_incarnation !== 'string' || !/^[0-9a-f]{32}$/.test(rf.im_incarnation)
-          || rf.ack_before_read_start !== true) {
-          throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid syntheticRecoveryFence');
-        }
-        return;
+      if (typeof botToken !== 'string' || !botToken.startsWith('bf_') || /[\r\n\t ]/.test(botToken)) {
+        throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid bot token');
       }
-      // Production octo-server v7 mounts only /v1/bot/permission-facts/v1 and
-      // /v1/bot/permission-facts/v1/bind-delivery (no /fence route, and ordinary
-      // SQL recovery cutover in XIN-2830 Decision 1 remains awaiting Owner decision).
-      throw new Error(
-        'PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: PERMISSION_NATIVE_RECOVERY_FENCE_UNAVAILABLE ' +
-        '(octo-server v7 mounts no recovery fence route; awaiting Owner decision on XIN-2830 Decision 1)',
-      );
+      const url = `${apiUrl}${NATIVE_SELF_BUNDLE_PATH}?space_id=${encodeURIComponent(expectedKey.space_id)}`;
+      let response: Response;
+      try {
+        response = await fetchFn(url, {
+          method: 'GET',
+          redirect: 'error',
+          cache: 'no-store',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${botToken}`,
+            'X-Space-ID': expectedKey.space_id,
+            'Cache-Control': 'no-store',
+            Pragma: 'no-cache',
+          },
+          signal: AbortSignal.timeout(5000),
+        });
+      } catch {
+        throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: native recovery endpoint unreachable');
+      }
+      if (response.status !== 200) {
+        try { await response.body?.cancel(); } catch { /* ignore */ }
+        throw new Error(`PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: HTTP ${response.status}`);
+      }
+      const contentEncoding = response.headers.get('content-encoding');
+      const cacheControl = (response.headers.get('cache-control') ?? '').toLowerCase();
+      const ageHeader = response.headers.get('age');
+      const xCache = (response.headers.get('x-cache') ?? '').toLowerCase();
+      if ((contentEncoding !== null && contentEncoding !== '')
+        || !cacheControl.includes('no-store')
+        || ageHeader !== null
+        || xCache.includes('hit')) {
+        try { await response.body?.cancel(); } catch { /* ignore */ }
+        throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: cached or encoded recovery response rejected');
+      }
+      const rawBytes = Buffer.from(await response.arrayBuffer());
+      if (rawBytes.length < 2 || rawBytes.length > MAX_BUNDLE_BYTES
+        || rawBytes.subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf]))) {
+        throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid recovery bundle size or BOM');
+      }
+      let rawText: string;
+      let parsed: unknown;
+      try {
+        rawText = new TextDecoder('utf-8', { fatal: true }).decode(rawBytes);
+        parsed = JSON.parse(rawText);
+      } catch {
+        throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: invalid recovery bundle JSON');
+      }
+      const verified = verifyNativeSelfBundle(parsed, rawText, expectedKey, options.expectedCatalog);
+      recoveredLineage = Object.freeze({
+        origin: expectedKey.origin,
+        botUid: expectedKey.bot_uid,
+        spaceId: expectedKey.space_id,
+        scopeIncarnation: verified.scopeIncarnation,
+      });
     },
 
     async inspect(delivery: ReceivedDelivery): Promise<NativeIngress> {
@@ -510,6 +643,9 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
       originals: readonly Readonly<NativeHeader>[];
       contributorReferences?: readonly string[];
     }> {
+      if (recoveredLineage && binding.scopeIncarnation !== recoveredLineage.scopeIncarnation) {
+        throw new Error('PERMISSION_NATIVE_SCOPE_INCARNATION_MISMATCH: turn scope_incarnation diverged from recovered lineage');
+      }
       const bound = boundDeliveryByHeaderRef.get(binding.header.header_reference);
       if (!bound) {
         throw new Error('PERMISSION_NATIVE_FACT_SOURCE_UNAVAILABLE: unbound header_reference');
@@ -594,6 +730,9 @@ export function createNativeEndpointDriver(options: NativeEndpointDriverOptions)
 
     async publish(binding: Readonly<EndpointBinding>, outputText: string, signal: AbortSignal): Promise<void> {
       signal.throwIfAborted();
+      if (recoveredLineage && binding.scopeIncarnation !== recoveredLineage.scopeIncarnation) {
+        throw new Error('PERMISSION_NATIVE_SCOPE_INCARNATION_MISMATCH: turn scope_incarnation diverged from recovered lineage');
+      }
       if (typeof outputText !== 'string' || !outputText.trim()) {
         throw new Error('Publication text unavailable');
       }
@@ -1179,6 +1318,7 @@ export function managedPermissionFactory(config: Config, dependencies?: Partial<
         config: current,
         key: descriptor.key,
         botId,
+        ...(descriptor.boot.catalog ? { expectedCatalog: descriptor.boot.catalog } : {}),
       }),
       worker: dependencies?.worker ?? createContainedWorkerDriver({
         config: current,
@@ -1200,11 +1340,37 @@ export function managedPermissionFactory(config: Config, dependencies?: Partial<
       if (results.some(result => result.status === 'rejected')) throw new Error('Managed shutdown requires quarantine');
     })();
     try {
+      const hasExistingJournal = Boolean(
+        adapter.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='permission_replay_meta'").get(),
+      );
+      let journal: ReplayJournal | undefined;
+      if (hasExistingJournal || !descriptor.provision) {
+        journal = new ReplayJournal(adapter, descriptor.journalKey, descriptor.journalKeyVersion, {
+          provision: false,
+          exclusive: true,
+        });
+      }
       await activeDependencies.native.recover(descriptor.key);
-      const journal = new ReplayJournal(adapter, descriptor.journalKey, descriptor.journalKeyVersion, {
+      journal ??= new ReplayJournal(adapter, descriptor.journalKey, descriptor.journalKeyVersion, {
         provision: descriptor.provision,
         exclusive: true,
       });
+      if (activeDependencies.native.recoveredLineage) {
+        const lineage = activeDependencies.native.recoveredLineage();
+        if (!lineage
+          || lineage.origin !== descriptor.key.origin
+          || lineage.botUid !== descriptor.key.bot_uid
+          || lineage.spaceId !== descriptor.key.space_id) {
+          throw new Error('PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: missing recovered native lineage');
+        }
+        try {
+          journal.bindLineage(lineage, { provision: descriptor.provision && !hasExistingJournal });
+        } catch (error) {
+          throw new Error(
+            `PERMISSION_NATIVE_AND_CONTAINMENT_BINDINGS_UNAVAILABLE: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       journal.recoverInterrupted();
       coordinator = await startPermissionCoordinator({ ...descriptor.boot, botToken: current.botToken,
         origin: descriptor.key.origin, botUid: botId, recipientId: descriptor.recipientId });
